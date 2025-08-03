@@ -4,4 +4,5 @@ Click the 'Preview' tab and select a PR template:
 - [Bugfix PR](?expand=1&template=bugfix_pr_template.md)
 - [Trivial PR](?expand=1&template=trivial_pr_template.md)
 - [Emergency PR](?expand=1&template=emergency_pr_template.md)
+- [Release PR](?expand=1&template=release_pr_template.md)
 - [Testing PR](?expand=1&template=testing_pr_template.md)
