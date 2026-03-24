@@ -1,0 +1,148 @@
+name: Version Bump
+
+on:
+  workflow_call:
+    inputs:
+      has_frontend:
+        description: 'Whether the repo has frontend/package.json'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Parse bump command
+        id: parse
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.comment.body.trim();
+            const match = body.match(/^\/bump\s+(frontend\s+)?(patch|minor)$/i);
+
+            if (!match) {
+              core.setFailed('Invalid command. Usage: /bump [frontend] <patch|minor>');
+              return;
+            }
+
+            const target = match[1] ? 'frontend' : 'backend';
+            const level = match[2].toLowerCase();
+
+            core.setOutput('target', target);
+            core.setOutput('level', level);
+            console.log(`Parsed: target=${target}, level=${level}`);
+
+      - name: Check frontend support
+        if: steps.parse.outputs.target == 'frontend' && inputs.has_frontend == false
+        run: |
+          echo "::error::This repo does not have a frontend. Use /bump patch or /bump minor."
+          exit 1
+
+      - name: Get PR branch
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.issue.number,
+            });
+            core.setOutput('ref', pr.data.head.ref);
+            core.setOutput('sha', pr.data.head.sha);
+
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.ref }}
+          fetch-depth: 1
+
+      - name: Bump backend version
+        id: bump-backend
+        if: steps.parse.outputs.target == 'backend'
+        run: |
+          LEVEL="${{ steps.parse.outputs.level }}"
+          VERSION=$(grep -m1 '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          if [ "$LEVEL" = "patch" ]; then
+            PATCH=$((PATCH + 1))
+          elif [ "$LEVEL" = "minor" ]; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          fi
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          sed -i "s/^version = \"${VERSION}\"/version = \"${NEW_VERSION}\"/" pyproject.toml
+
+          echo "old=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "new=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Bumped backend: $VERSION → $NEW_VERSION"
+
+      - name: Bump frontend version
+        id: bump-frontend
+        if: steps.parse.outputs.target == 'frontend'
+        run: |
+          LEVEL="${{ steps.parse.outputs.level }}"
+          VERSION=$(node -p "require('./frontend/package.json').version")
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          if [ "$LEVEL" = "patch" ]; then
+            PATCH=$((PATCH + 1))
+          elif [ "$LEVEL" = "minor" ]; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          fi
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          jq --arg v "$NEW_VERSION" '.version = $v' frontend/package.json > frontend/package.json.tmp
+          mv frontend/package.json.tmp frontend/package.json
+
+          echo "old=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "new=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Bumped frontend: $VERSION → $NEW_VERSION"
+
+      - name: Commit and push
+        run: |
+          TARGET="${{ steps.parse.outputs.target }}"
+          if [ "$TARGET" = "backend" ]; then
+            NEW_VERSION="${{ steps.bump-backend.outputs.new }}"
+          else
+            NEW_VERSION="${{ steps.bump-frontend.outputs.new }}"
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "bump ${TARGET} version to ${NEW_VERSION}"
+          git push
+
+      - name: React to comment
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: '+1',
+            });
+
+      - name: React on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'confused',
+            });
